@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+import socket
+import os
+import signal
+import select
+
+from multiprocessing import Process
+from multiprocessing import Queue
+
+class Worker(Process):
+    def __init__(self, worker_id, socket, exit_queue, callback):
+        super(Worker, self).__init__()
+        self._worker_id = worker_id
+        self._exit_queue = exit_queue
+        self._callback = callback
+        self._socket = socket
+
+    def run(self):
+        print("[WORKER {}] Starting worker".format(self._worker_id))
+        read_list = [self._socket]
+
+        while self._exit_queue.empty():
+            readable, writable, errored = select.select(read_list, [], [], 5)
+            if not readable:
+                print("[WORKER {}] Select timeout. Trying again".format(self._worker_id))
+            else:
+                self._callback(self._worker_id, self._socket)
+
+        print("[WORKER {}] Ending worker".format(self._worker_id))
+        self._socket.close()
+
+
+def communicate_with_client(worker_id, socket):
+    print("[WORKER {}] Accepting new connections".format(worker_id))
+    conn, addr = socket.accept()
+    print("[WORKER {}] New connection accepted: {}".format(worker_id, addr))
+
+    # Do something
+    data = conn.recv(1024)
+    print("[WORKER {}] Data received: {}".format(worker_id, data))
+    conn.close()
+
+def handler(signal, frame):
+    pass
+
+def main():
+    amount_workers = int(os.environ["AMOUNT_WORKERS"])
+    # socket.setdefaulttimeout(5)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("localhost", 12345))
+        s.listen(amount_workers)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        # First, create WorkerPool
+        exit_queue = Queue()
+        workers = [Worker(i, s, exit_queue, communicate_with_client)
+                   for i in range(amount_workers)]
+
+        for worker in workers:
+            worker.start()
+
+        signal.signal(signal.SIGTERM, handler)
+        signal.signal(signal.SIGINT, handler)
+        # Wait for the signal to arrive in the main thread
+        print("[MAIN] Waiting SIGTERM to finish program...")
+        signal.pause()
+        print("[MAIN] SIGTERM arrived. Terminating program")
+        exit_queue.put(None)
+
+        for worker in workers:
+            worker.join()
+
+
+if __name__ == "__main__":
+    main()
+
